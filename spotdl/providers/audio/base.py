@@ -76,6 +76,23 @@ class AudioProvider:
     SUPPORTS_ISRC: bool
     GET_RESULTS_OPTS: List[Dict[str, Any]]
 
+    @staticmethod
+    def normalize_youtube_url(url: Optional[str]) -> Optional[str]:
+        """
+        Normalize YouTube Music URLs so yt-dlp keeps the correct music-domain
+        context for song results and does not downgrade them to a generic YouTube
+        URL that may trigger extraction/download 403s.
+        """
+
+        if not url:
+            return url
+
+        return (
+            url.replace("https://m.youtube.com/", "https://music.youtube.com/")
+            .replace("http://m.youtube.com/", "http://music.youtube.com/")
+            .replace("m.youtube.com/", "music.youtube.com/")
+        )
+
     def __init__(
         self,
         output_format: str = "mp3",
@@ -116,7 +133,20 @@ class AudioProvider:
             "cookiefile": self.cookie_file,
             "outtmpl": str((get_temp_path() / "%(id)s.%(ext)s").resolve()),
             "retries": 5,
-            "extractor_args": {},
+            # Provide sane defaults that keep YouTube Music context and use
+            # an Android-like player client to avoid some 403 extraction paths.
+            "extractor_args": {
+                "youtube": {"player_client": "ANDROID"}
+            },
+            # Some servers accept a Referer header tied to music.youtube.com
+            # and may respond differently than the bare www domain.
+            "http_headers": {
+                "Referer": "https://music.youtube.com/",
+                "User-Agent": (
+                    "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/86.0.4240.198 Mobile Safari/537.36"
+                ),
+            },
         }
 
         yt_dlp_options.update(get_local_deno_yt_dlp_options())
@@ -395,6 +425,8 @@ class AudioProvider:
         ### Returns
         - A dictionary containing the metadata.
         """
+
+        url = self.normalize_youtube_url(url)
 
         try:
             data = self.audio_handler.extract_info(url, download=download)

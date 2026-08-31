@@ -15,6 +15,7 @@ from typing import Dict, List, Optional
 import requests
 from ytmusicapi import YTMusic
 
+from spotdl.providers.audio.base import AudioProvider
 from spotdl.types.album import Album
 from spotdl.types.artist import Artist
 from spotdl.types.playlist import Playlist
@@ -172,6 +173,7 @@ def get_simple_songs(
                 Song.from_missing_data(url=split_urls[1], download_url=split_urls[0])
             )
         elif "music.youtube.com/watch?v" in request:
+            request = AudioProvider.normalize_youtube_url(request)
             track_data = get_ytm_client().get_song(request.split("?v=", 1)[1])
 
             video_details = track_data.get("videoDetails")
