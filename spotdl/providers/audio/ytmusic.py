@@ -3,6 +3,8 @@ YTMusic module for downloading and searching songs.
 """
 
 import logging
+import time
+import json
 from typing import Any, Dict, List
 
 from rapidfuzz import fuzz
@@ -266,7 +268,30 @@ class YouTubeMusic(AudioProvider):
                     attempt + 1,
                     self.SEARCH_ATTEMPTS,
                 )
-                search_results = self.client.search(search_term_variant, **kwargs)
+                try:
+                    search_results = self.client.search(search_term_variant, **kwargs)
+                except json.JSONDecodeError as exc:
+                    logger.debug(
+                        "[YTMusic] JSON decode error during search for %s: %s",
+                        search_term_variant,
+                        exc,
+                    )
+                    # Recreate client and retry the attempt
+                    self.client = self._create_client()
+                    # small backoff before retrying
+                    time.sleep(0.5)
+                    continue
+                except Exception as exc:  # pylint: disable=broad-except
+                    logger.debug(
+                        "[YTMusic] search failed (attempt %s/%s) for %s: %s",
+                        attempt + 1,
+                        self.SEARCH_ATTEMPTS,
+                        search_term_variant,
+                        exc,
+                    )
+                    self.client = self._create_client()
+                    time.sleep(0.5)
+                    continue
 
                 # Simplify results
                 results = []

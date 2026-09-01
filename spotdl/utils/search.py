@@ -13,7 +13,10 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import requests
+import time
+import json
 from ytmusicapi import YTMusic
+from spotdl.providers.audio.ytmusic import YouTubeMusic
 
 from spotdl.providers.audio.base import AudioProvider
 from spotdl.types.album import Album
@@ -52,9 +55,63 @@ def get_ytm_client() -> YTMusic:
 
     global client  # pylint: disable=global-statement
     if client is None:
+        # Try creating a robust client using the provider's helper which
+        # already handles language/region differences. Retry a few times to
+        # recover from transient network or remote-side failures that cause
+        # ytmusicapi to fail getting a client token.
+        attempts = 3
+        for attempt in range(attempts):
+            try:
+                client = YouTubeMusic._create_client()
+                return client
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.debug("Failed to create YTMusic client (attempt %s/%s): %s", attempt + 1, attempts, exc)
+                client = None
+                if attempt < attempts - 1:
+                    time.sleep(1)
+
+        # Final fallback to a plain constructor
         client = YTMusic()
 
     return client
+
+
+def _safe_ytm_call(method_name: str, *args, **kwargs):
+    """
+    Call a YTMusic client method safely with retries. Recreates the client
+    between attempts to recover from transient JSONDecodeError or token
+    acquisition failures.
+    """
+    attempts = 3
+    last_exc = None
+    for attempt in range(attempts):
+        try:
+            c = get_ytm_client()
+            method = getattr(c, method_name)
+            return method(*args, **kwargs)
+        except json.JSONDecodeError as exc:
+            logger.debug("YTMusic JSON decode error on %s: %s", method_name, exc)
+            last_exc = exc
+        except Exception as exc:  # pylint: disable=broad-except
+            # ytmusicapi can raise various exceptions when fetching client
+            # tokens or network failures occur. Try to recreate the client
+            # and retry.
+            logger.debug("YTMusic call %s failed (attempt %s/%s): %s", method_name, attempt + 1, attempts, exc)
+            last_exc = exc
+
+        # Recreate client and retry
+        try:
+            # force recreate
+            globals()["client"] = None
+            get_ytm_client()
+        except Exception:
+            # If recreation fails, just wait and retry
+            time.sleep(1)
+
+    # If all attempts failed, raise the last exception
+    if last_exc:
+        raise last_exc
+    raise RuntimeError(f"YTMusic {method_name} failed after {attempts} attempts")
 
 
 class QueryError(Exception):
@@ -174,7 +231,7 @@ def get_simple_songs(
             )
         elif "music.youtube.com/watch?v" in request:
             request = AudioProvider.normalize_youtube_url(request)
-            track_data = get_ytm_client().get_song(request.split("?v=", 1)[1])
+            track_data = _safe_ytm_call("get_song", request.split("?v=", 1)[1])
 
             video_details = track_data.get("videoDetails")
             if video_details is None:
@@ -652,13 +709,13 @@ def create_ytm_album(url: str, fetch_songs: bool = True) -> Album:
     if "?list=" not in url or not url.startswith("https://music.youtube.com/"):
         raise ValueError(f"Invalid album url: {url}")
 
-    browse_id = get_ytm_client().get_album_browse_id(
-        url.split("?list=")[1].split("&")[0]
+    browse_id = _safe_ytm_call(
+        "get_album_browse_id", url.split("?list=")[1].split("&")[0]
     )
     if browse_id is None:
         raise ValueError(f"Invalid album url: {url}")
 
-    album = get_ytm_client().get_album(browse_id)
+    album = _safe_ytm_call("get_album", browse_id)
 
     if album is None:
         raise ValueError(f"Couldn't fetch album: {url}")
@@ -711,7 +768,7 @@ def create_ytm_playlist(url: str, fetch_songs: bool = True) -> Playlist:
         playlist_id = url.split("/browse/")[1]
     else:
         playlist_id = url.split("?list=")[1]
-    playlist = get_ytm_client().get_playlist(playlist_id, None)  # type: ignore
+    playlist = _safe_ytm_call("get_playlist", playlist_id, None)  # type: ignore
 
     if playlist is None:
         raise ValueError(f"Couldn't fetch playlist: {url}")
